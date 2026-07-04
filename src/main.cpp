@@ -10,6 +10,8 @@
 #include "Camera.h"
 #include "Types.h"
 #include "world/World.h"
+#include "world/Player.h"
+#include "world/RayCast.h"
 #include "render/ChunkMesh.h"
 #include "render/MeshBuilder.h"
 
@@ -152,6 +154,12 @@ int main() {
     ChunkPos origin{0, 0};
     Chunk& c = world.chunks()[origin];
     TerrainGenerator::fill(c, origin);
+    Player player;
+    world.update(player.position);
+    const RayHit startupHit = RayCast::cast(player.eyePos(), glm::vec3(0.0f, -1.0f, 0.0f), 128.0f, world);
+    std::cout << "[Dev2] Player eye: " << player.eyePos().x << ", "
+              << player.eyePos().y << ", " << player.eyePos().z
+              << " | ground ray: " << (startupHit.hit ? "hit" : "miss") << "\n";
 
     rebuildDirtyMeshes(world);
 

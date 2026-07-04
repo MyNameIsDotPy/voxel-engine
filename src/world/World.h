@@ -2,6 +2,7 @@
 
 #include "Chunk.h"
 #include "TerrainGenerator.h"
+#include "BlockRegistry.h"
 #include "../Types.h"
 
 #include <unordered_map>
@@ -65,6 +66,10 @@ public:
 
         // Mark edge neighbors dirty if the modified block sits on a chunk border
         markNeighborsDirty(cp, lp);
+    }
+
+    bool isSolid(glm::ivec3 worldPos) const {
+        return BlockRegistry::get(getBlock(worldPos)).isSolid();
     }
 
     // ── Chunk access ──────────────────────────────────────────────────────────

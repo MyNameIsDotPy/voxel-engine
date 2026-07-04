@@ -3,55 +3,66 @@
 #include "Chunk.h"
 #include "../Types.h"
 
-// ── TerrainGenerator ─────────────────────────────────────────────────────────
-// Fills a Chunk with test terrain showing every voxel type.
-// Full noise-based generation is tracked in issue #12.
+#include <FastNoiseLite.h>
+#include <algorithm>
+#include <cmath>
+
 class TerrainGenerator {
 public:
-    static void fill(Chunk& chunk, ChunkPos /*pos*/) {
-        // Divide the 16x16 chunk into a 4x3 grid of zones (4 cols, 3 rows)
-        // to show every block type side by side.
-        //
-        //  z\x  0..3    4..7    8..11   12..15
-        //  0..4  GrassP  GrassDr GrassSn GrassDn
-        //  5..9  Dirt    RockSm  RockCr  RockMs
-        // 10..15 Snow    Water   Lava    (Snow)
+    static int surfaceHeight(int worldX, int worldZ) {
+        static FastNoiseLite hills = [] {
+            FastNoiseLite n;
+            n.SetSeed(1337);
+            n.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
+            n.SetFrequency(0.035f);
+            return n;
+        }();
 
-        for (int x = 0; x < CHUNK_W; ++x)
-        for (int z = 0; z < CHUNK_D; ++z)
-        {
-            const int col = x / 4;  // 0..3
-            const int row = z / 5;  // 0..2
+        static FastNoiseLite detail = [] {
+            FastNoiseLite n;
+            n.SetSeed(2718);
+            n.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
+            n.SetFrequency(0.11f);
+            return n;
+        }();
 
-            BlockType bt = BlockType::GrassPlain;
+        const float height = 18.0f + hills.GetNoise((float)worldX, (float)worldZ) * 10.0f
+                                   + detail.GetNoise((float)worldX, (float)worldZ) * 3.0f;
+        return std::clamp((int)std::round(height), 2, CHUNK_H - 2);
+    }
 
-            if (row == 0) {
-                const BlockType cols[] = {
-                    BlockType::GrassPlain,
-                    BlockType::GrassDry,
-                    BlockType::GrassSnowy,
-                    BlockType::GrassDense,
-                };
-                bt = cols[col];
-            } else if (row == 1) {
-                const BlockType cols[] = {
-                    BlockType::Dirt,
-                    BlockType::RockSmooth,
-                    BlockType::RockCracked,
-                    BlockType::RockMoss,
-                };
-                bt = cols[col];
-            } else {
-                const BlockType cols[] = {
-                    BlockType::Snow,
-                    BlockType::Water,
-                    BlockType::Lava,
-                    BlockType::Snow,
-                };
-                bt = cols[col];
+    static void fill(Chunk& chunk, ChunkPos pos) {
+        for (int x = 0; x < CHUNK_W; ++x) {
+            for (int z = 0; z < CHUNK_D; ++z) {
+                const int worldX = pos.x * CHUNK_W + x;
+                const int worldZ = pos.z * CHUNK_D + z;
+                const int h = surfaceHeight(worldX, worldZ);
+
+                for (int y = 0; y <= h; ++y) {
+                    if (y == h) {
+                        chunk.set(x, y, z, surfaceBlock(h));
+                    } else if (y > h - 4) {
+                        chunk.set(x, y, z, BlockType::Dirt);
+                    } else {
+                        chunk.set(x, y, z, BlockType::RockSmooth);
+                    }
+                }
+
+                if ((worldX + worldZ) % 37 == 0 && h + 1 < CHUNK_H) {
+                    chunk.set(x, h + 1, z, BlockType::GrassDense);
+                }
             }
-
-            chunk.set(x, 0, z, bt);
         }
+    }
+
+private:
+    static BlockType surfaceBlock(int height) {
+        if (height > 24) {
+            return BlockType::Snow;
+        }
+        if (height < 14) {
+            return BlockType::GrassDry;
+        }
+        return BlockType::GrassPlain;
     }
 };

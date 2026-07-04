@@ -28,6 +28,14 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(glm)
 
+# FastNoiseLite
+FetchContent_Declare(
+    fastnoiselite
+    GIT_REPOSITORY https://github.com/Auburn/FastNoiseLite.git
+    GIT_TAG        master
+)
+FetchContent_MakeAvailable(fastnoiselite)
+
 # ── GLAD (v2) ────────────────────────────────────────────────────────────────
 FetchContent_Declare(
     glad
@@ -45,6 +53,7 @@ add_executable(voxel-engine
 
 target_include_directories(voxel-engine PRIVATE
     ${CMAKE_SOURCE_DIR}/src
+    ${fastnoiselite_SOURCE_DIR}/Cpp
 )
 
 target_link_libraries(voxel-engine PRIVATE
