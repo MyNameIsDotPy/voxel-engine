@@ -41,7 +41,7 @@ public:
                 const int h = surfaceHeight(worldX, worldZ);
 
                 for (int y = 0; y <= h; ++y) {
-                    if (y == h)          chunk.set(x, y, z, surfaceBlock(h));
+                    if (y == h)          chunk.set(x, y, z, surfaceBlock(h, worldX, worldZ));
                     else if (y > h - 4)  chunk.set(x, y, z, BlockType::Dirt);
                     else                 chunk.set(x, y, z, BlockType::RockSmooth);
                 }
@@ -49,21 +49,28 @@ public:
                 // Fill below sea level with water
                 for (int y = h + 1; y <= SEA_LEVEL; ++y)
                     chunk.set(x, y, z, BlockType::Water);
-
-                // Sparse surface decoration (above water only)
-                if (h > SEA_LEVEL && (worldX + worldZ) % 37 == 0 && h + 1 < CHUNK_H)
-                    chunk.set(x, h + 1, z, BlockType::GrassDense);
             }
         }
     }
 
 private:
-    static BlockType surfaceBlock(int height) {
+    static BlockType surfaceBlock(int height, int worldX, int worldZ) {
+        static FastNoiseLite biome = [] {
+            FastNoiseLite n;
+            n.SetSeed(4242);
+            n.SetNoiseType(FastNoiseLite::NoiseType_OpenSimplex2);
+            n.SetFrequency(0.055f);
+            return n;
+        }();
+
         if (height > 24) {
             return BlockType::Snow;
         }
         if (height < 14) {
             return BlockType::GrassDry;
+        }
+        if (biome.GetNoise((float)worldX, (float)worldZ) > 0.35f) {
+            return BlockType::GrassDense;
         }
         return BlockType::GrassPlain;
     }
