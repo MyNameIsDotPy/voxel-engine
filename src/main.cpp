@@ -10,6 +10,7 @@
 #include "Types.h"
 #include "world/World.h"
 #include "world/Player.h"
+#include "world/TerrainGenerator.h"
 #include "world/RayCast.h"
 #include "render/ChunkMesh.h"
 #include "render/MeshBuilder.h"
@@ -163,6 +164,15 @@ int main() {
     // ── World + Player ────────────────────────────────────────────────────────
     World  world;
     Player player;
+
+    // Spawn above the highest terrain block in the player's footprint
+    {
+        int maxH = 0;
+        for (int x = (int)player.position.x - 1; x <= (int)player.position.x + 1; ++x)
+        for (int z = (int)player.position.z - 1; z <= (int)player.position.z + 1; ++z)
+            maxH = std::max(maxH, TerrainGenerator::surfaceHeight(x, z));
+        player.position.y = static_cast<float>(maxH) + player.halfExtents.y + 1.5f;
+    }
 
     world.update(player.position);
     rebuildDirtyMeshes(world);
