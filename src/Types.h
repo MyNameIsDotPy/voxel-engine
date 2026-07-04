@@ -9,7 +9,7 @@ struct Vertex {
     glm::vec3 pos;
     glm::vec3 normal;
     glm::vec2 uv;
-    glm::vec3 color;  // per-block base color (until TextureAtlas replaces it)
+    glm::vec4 color;  // rgb + alpha (alpha < 1 = transparent, e.g. water)
 };
 
 // Integer chunk coordinate in the world grid (XZ plane)

@@ -9,44 +9,37 @@
 #include <vector>
 
 // ── MeshBuilder ───────────────────────────────────────────────────────────────
-// Converts a Chunk's voxel data into a flat vertex list using greedy meshing.
-//
-// Algorithm (per face direction, per slice):
-//   1. Build a 2D visibility mask: each cell = block type if face is exposed, Air if not.
-//   2. Scan the mask: find the widest run of the same type (width w).
-//   3. Extend downward as long as all w cells match (height h).
-//   4. Emit one quad covering w×h blocks. Clear those mask cells.
-//   5. Repeat until the mask is empty.
-//
-// Result: coplanar, same-type faces are merged into a single large quad,
-//         dramatically reducing vertex count for flat or homogeneous surfaces.
+// Converts a Chunk's voxel data into two greedy-meshed vertex lists:
+//   opaque      — fully solid blocks, rendered first
+//   transparent — water / liquids, rendered in a separate blended pass
 class MeshBuilder {
 public:
-    // neighbors[6] — adjacent chunks in face order: +Y,-Y,+X,-X,+Z,-Z
-    // Pass nullptr for any neighbor that isn't loaded (treated as Air).
-    static std::vector<Vertex> build(const Chunk&   chunk,
-                                     ChunkPos       pos,
-                                     const Chunk*   neighbors[6] = nullptr)
+    struct MeshData {
+        std::vector<Vertex> opaque;
+        std::vector<Vertex> transparent;
+    };
+
+    // neighbors[6] — adjacent chunks: +Y,-Y,+X,-X,+Z,-Z (nullptr = treat as Air)
+    static MeshData build(const Chunk&  chunk,
+                          ChunkPos      pos,
+                          const Chunk*  neighbors[6] = nullptr)
     {
-        std::vector<Vertex> verts;
-        verts.reserve(512);
+        MeshData data;
+        data.opaque.reserve(512);
+        data.transparent.reserve(128);
 
         const float ox = static_cast<float>(pos.x * CHUNK_W);
         const float oz = static_cast<float>(pos.z * CHUNK_D);
 
-        buildYFaces(verts, chunk, neighbors, ox, oz);
-        buildXFaces(verts, chunk, neighbors, ox, oz);
-        buildZFaces(verts, chunk, neighbors, ox, oz);
+        buildYFaces(data, chunk, neighbors, ox, oz);
+        buildXFaces(data, chunk, neighbors, ox, oz);
+        buildZFaces(data, chunk, neighbors, ox, oz);
 
-        return verts;
+        return data;
     }
 
 private:
     // ── Mask types ────────────────────────────────────────────────────────────
-    // Top/Bottom:  W=CHUNK_W (x), H=CHUNK_D (z)
-    // East/West:   W=CHUNK_D (z), H=CHUNK_H (y)
-    // South/North: W=CHUNK_W (x), H=CHUNK_H (y)
-
     template<int W, int H>
     using Mask = std::array<BlockType, W * H>;
 
@@ -57,14 +50,22 @@ private:
     static BlockType  at(const Mask<W,H>& m, int u, int v) { return m[u + v * W]; }
 
     // ── Face visibility ───────────────────────────────────────────────────────
-    // A face from block `a` into block `b` is visible when:
-    //   a is solid AND b is either air or transparent.
-    static bool visible(BlockType a, BlockType b) {
+    // Opaque face: solid block `a` toward `b` → visible if b is air or transparent
+    static bool visibleOpaque(BlockType a, BlockType b) {
         if (a == BlockType::Air) return false;
         const Voxel& va = BlockRegistry::get(a);
-        if (!va.isSolid()) return false;
+        if (!va.isSolid() || va.alpha() < 1.0f) return false;
         const Voxel& vb = BlockRegistry::get(b);
         return !vb.isSolid() || vb.isTransparent();
+    }
+
+    // Transparent face: liquid/transparent block `a` toward `b`
+    // Only emit if neighbor is air (no liquid-to-liquid faces)
+    static bool visibleTransparent(BlockType a, BlockType b) {
+        if (a == BlockType::Air) return false;
+        const Voxel& va = BlockRegistry::get(a);
+        if (va.alpha() >= 1.0f) return false; // only transparent blocks here
+        return b == BlockType::Air;
     }
 
     // ── Greedy merge ──────────────────────────────────────────────────────────
@@ -104,13 +105,11 @@ private:
     }
 
     // ── Quad emission ─────────────────────────────────────────────────────────
-    // Vertices must be in CCW order when viewed from the outside.
-    // Triangles: 0-1-2, 0-2-3
     static void emitQuad(std::vector<Vertex>& out,
                           glm::vec3 v0, glm::vec3 v1,
                           glm::vec3 v2, glm::vec3 v3,
                           glm::vec3 normal, float uw, float uh,
-                          glm::vec3 color)
+                          glm::vec4 color)
     {
         const glm::vec2 uv0(0,  0 );
         const glm::vec2 uv1(0,  uh);
@@ -125,11 +124,17 @@ private:
         out.push_back({ v3, normal, uv3, color });
     }
 
+    static glm::vec4 blockColor(BlockType bt) {
+        const Voxel& v = BlockRegistry::get(bt);
+        return glm::vec4(v.color(), v.alpha());
+    }
+
     // ── +Y / -Y  (mask: u=x, v=z) ────────────────────────────────────────────
-    static void buildYFaces(std::vector<Vertex>& verts, const Chunk& chunk,
+    static void buildYFaces(MeshData& data, const Chunk& chunk,
                              const Chunk* nb[6], float ox, float oz)
     {
-        Mask<CHUNK_W, CHUNK_D> maskTop, maskBot;
+        Mask<CHUNK_W, CHUNK_D> maskOpaqueTop, maskOpaqueBot;
+        Mask<CHUNK_W, CHUNK_D> maskTransTop,  maskTransBot;
 
         for (int y = 0; y < CHUNK_H; ++y) {
             const float fy = static_cast<float>(y);
@@ -141,42 +146,44 @@ private:
                 // +Y neighbor
                 BlockType abv = (y+1 < CHUNK_H) ? chunk.get(x,y+1,z) : BlockType::Air;
                 // -Y neighbor
-                BlockType blw = (y-1 >= 0)       ? chunk.get(x,y-1,z) : BlockType::Air;
+                BlockType blw = (y-1 >= 0) ? chunk.get(x,y-1,z) : BlockType::Air;
 
-                at<CHUNK_W,CHUNK_D>(maskTop, x, z) = visible(cur, abv) ? cur : BlockType::Air;
-                at<CHUNK_W,CHUNK_D>(maskBot, x, z) = visible(cur, blw) ? cur : BlockType::Air;
+                at<CHUNK_W,CHUNK_D>(maskOpaqueTop, x, z) = visibleOpaque(cur, abv)      ? cur : BlockType::Air;
+                at<CHUNK_W,CHUNK_D>(maskOpaqueBot, x, z) = visibleOpaque(cur, blw)      ? cur : BlockType::Air;
+                at<CHUNK_W,CHUNK_D>(maskTransTop,  x, z) = visibleTransparent(cur, abv) ? cur : BlockType::Air;
+                at<CHUNK_W,CHUNK_D>(maskTransBot,  x, z) = visibleTransparent(cur, blw) ? cur : BlockType::Air;
             }
 
-            // +Y  — CCW from above: v0(x,z) → v1(x,z+h) → v2(x+w,z+h) → v3(x+w,z)
-            greedyMerge<CHUNK_W,CHUNK_D>(maskTop, [&](int u0,int v0,int w,int h,BlockType bt){
-                const glm::vec3 col = BlockRegistry::get(bt).color();
+            auto emitTop = [&](std::vector<Vertex>& buf, Mask<CHUNK_W,CHUNK_D>& mask) {
                 const float fy1 = fy + 1.0f;
-                emitQuad(verts,
-                    {ox+u0,   fy1, oz+v0  },
-                    {ox+u0,   fy1, oz+v0+h},
-                    {ox+u0+w, fy1, oz+v0+h},
-                    {ox+u0+w, fy1, oz+v0  },
-                    {0,1,0}, (float)w, (float)h, col);
-            });
+                greedyMerge<CHUNK_W,CHUNK_D>(mask, [&](int u0,int v0,int w,int h,BlockType bt){
+                    emitQuad(buf,
+                        {ox+u0,   fy1, oz+v0  }, {ox+u0,   fy1, oz+v0+h},
+                        {ox+u0+w, fy1, oz+v0+h}, {ox+u0+w, fy1, oz+v0  },
+                        {0,1,0}, (float)w, (float)h, blockColor(bt));
+                });
+            };
+            auto emitBot = [&](std::vector<Vertex>& buf, Mask<CHUNK_W,CHUNK_D>& mask) {
+                greedyMerge<CHUNK_W,CHUNK_D>(mask, [&](int u0,int v0,int w,int h,BlockType bt){
+                    emitQuad(buf,
+                        {ox+u0,   fy, oz+v0  }, {ox+u0+w, fy, oz+v0  },
+                        {ox+u0+w, fy, oz+v0+h}, {ox+u0,   fy, oz+v0+h},
+                        {0,-1,0}, (float)w, (float)h, blockColor(bt));
+                });
+            };
 
-            // -Y  — CCW from below: v0(x,z) → v1(x+w,z) → v2(x+w,z+h) → v3(x,z+h)
-            greedyMerge<CHUNK_W,CHUNK_D>(maskBot, [&](int u0,int v0,int w,int h,BlockType bt){
-                const glm::vec3 col = BlockRegistry::get(bt).color();
-                emitQuad(verts,
-                    {ox+u0,   fy, oz+v0  },
-                    {ox+u0+w, fy, oz+v0  },
-                    {ox+u0+w, fy, oz+v0+h},
-                    {ox+u0,   fy, oz+v0+h},
-                    {0,-1,0}, (float)w, (float)h, col);
-            });
+            emitTop(data.opaque,      maskOpaqueTop);
+            emitBot(data.opaque,      maskOpaqueBot);
+            emitTop(data.transparent, maskTransTop);
+            emitBot(data.transparent, maskTransBot);
         }
     }
 
     // ── +X / -X  (mask: u=z, v=y) ────────────────────────────────────────────
-    static void buildXFaces(std::vector<Vertex>& verts, const Chunk& chunk,
+    static void buildXFaces(MeshData& data, const Chunk& chunk,
                              const Chunk* nb[6], float ox, float oz)
     {
-        Mask<CHUNK_D, CHUNK_H> maskE, maskW;
+        Mask<CHUNK_D, CHUNK_H> maskOE, maskOW, maskTE, maskTW;
 
         for (int x = 0; x < CHUNK_W; ++x) {
             const float fx = ox + static_cast<float>(x);
@@ -185,49 +192,47 @@ private:
             for (int y = 0; y < CHUNK_H; ++y) {
                 const BlockType cur = chunk.get(x, y, z);
 
-                // +X neighbor
                 BlockType east = BlockType::Air;
-                if (x+1 < CHUNK_W)         east = chunk.get(x+1, y, z);
-                else if (nb && nb[2])       east = nb[2]->get(0, y, z);
+                if (x+1 < CHUNK_W)    east = chunk.get(x+1, y, z);
+                else if (nb && nb[2]) east = nb[2]->get(0, y, z);
 
-                // -X neighbor
                 BlockType west = BlockType::Air;
-                if (x-1 >= 0)              west = chunk.get(x-1, y, z);
-                else if (nb && nb[3])      west = nb[3]->get(CHUNK_W-1, y, z);
+                if (x-1 >= 0)         west = chunk.get(x-1, y, z);
+                else if (nb && nb[3]) west = nb[3]->get(CHUNK_W-1, y, z);
 
-                at<CHUNK_D,CHUNK_H>(maskE, z, y) = visible(cur, east) ? cur : BlockType::Air;
-                at<CHUNK_D,CHUNK_H>(maskW, z, y) = visible(cur, west) ? cur : BlockType::Air;
+                at<CHUNK_D,CHUNK_H>(maskOE, z, y) = visibleOpaque(cur, east)      ? cur : BlockType::Air;
+                at<CHUNK_D,CHUNK_H>(maskOW, z, y) = visibleOpaque(cur, west)      ? cur : BlockType::Air;
+                at<CHUNK_D,CHUNK_H>(maskTE, z, y) = visibleTransparent(cur, east) ? cur : BlockType::Air;
+                at<CHUNK_D,CHUNK_H>(maskTW, z, y) = visibleTransparent(cur, west) ? cur : BlockType::Air;
             }
 
-            // +X  — CCW from +X: v0(z+w,y) → v1(z,y) → v2(z,y+h) → v3(z+w,y+h)
-            greedyMerge<CHUNK_D,CHUNK_H>(maskE, [&](int u0,int v0,int w,int h,BlockType bt){
-                const glm::vec3 col = BlockRegistry::get(bt).color();
-                emitQuad(verts,
-                    {fx+1, (float)v0,   oz+u0+w},
-                    {fx+1, (float)v0,   oz+u0  },
-                    {fx+1, (float)v0+h, oz+u0  },
-                    {fx+1, (float)v0+h, oz+u0+w},
-                    {1,0,0}, (float)w, (float)h, col);
-            });
+            auto emitE = [&](std::vector<Vertex>& buf, Mask<CHUNK_D,CHUNK_H>& mask) {
+                greedyMerge<CHUNK_D,CHUNK_H>(mask, [&](int u0,int v0,int w,int h,BlockType bt){
+                    emitQuad(buf,
+                        {fx+1,(float)v0,  oz+u0+w}, {fx+1,(float)v0,  oz+u0  },
+                        {fx+1,(float)v0+h,oz+u0  }, {fx+1,(float)v0+h,oz+u0+w},
+                        {1,0,0}, (float)w, (float)h, blockColor(bt));
+                });
+            };
+            auto emitW = [&](std::vector<Vertex>& buf, Mask<CHUNK_D,CHUNK_H>& mask) {
+                greedyMerge<CHUNK_D,CHUNK_H>(mask, [&](int u0,int v0,int w,int h,BlockType bt){
+                    emitQuad(buf,
+                        {fx,  (float)v0,  oz+u0  }, {fx,  (float)v0,  oz+u0+w},
+                        {fx,  (float)v0+h,oz+u0+w}, {fx,  (float)v0+h,oz+u0  },
+                        {-1,0,0}, (float)w, (float)h, blockColor(bt));
+                });
+            };
 
-            // -X  — CCW from -X: v0(z,y) → v1(z+w,y) → v2(z+w,y+h) → v3(z,y+h)
-            greedyMerge<CHUNK_D,CHUNK_H>(maskW, [&](int u0,int v0,int w,int h,BlockType bt){
-                const glm::vec3 col = BlockRegistry::get(bt).color();
-                emitQuad(verts,
-                    {fx,   (float)v0,   oz+u0  },
-                    {fx,   (float)v0,   oz+u0+w},
-                    {fx,   (float)v0+h, oz+u0+w},
-                    {fx,   (float)v0+h, oz+u0  },
-                    {-1,0,0}, (float)w, (float)h, col);
-            });
+            emitE(data.opaque, maskOE); emitW(data.opaque, maskOW);
+            emitE(data.transparent, maskTE); emitW(data.transparent, maskTW);
         }
     }
 
     // ── +Z / -Z  (mask: u=x, v=y) ────────────────────────────────────────────
-    static void buildZFaces(std::vector<Vertex>& verts, const Chunk& chunk,
+    static void buildZFaces(MeshData& data, const Chunk& chunk,
                              const Chunk* nb[6], float ox, float oz)
     {
-        Mask<CHUNK_W, CHUNK_H> maskS, maskN;
+        Mask<CHUNK_W, CHUNK_H> maskOS, maskON, maskTS, maskTN;
 
         for (int z = 0; z < CHUNK_D; ++z) {
             const float fz = oz + static_cast<float>(z);
@@ -236,41 +241,39 @@ private:
             for (int y = 0; y < CHUNK_H; ++y) {
                 const BlockType cur = chunk.get(x, y, z);
 
-                // +Z neighbor
                 BlockType south = BlockType::Air;
-                if (z+1 < CHUNK_D)         south = chunk.get(x, y, z+1);
-                else if (nb && nb[4])       south = nb[4]->get(x, y, 0);
+                if (z+1 < CHUNK_D)    south = chunk.get(x, y, z+1);
+                else if (nb && nb[4]) south = nb[4]->get(x, y, 0);
 
-                // -Z neighbor
                 BlockType north = BlockType::Air;
-                if (z-1 >= 0)              north = chunk.get(x, y, z-1);
-                else if (nb && nb[5])      north = nb[5]->get(x, y, CHUNK_D-1);
+                if (z-1 >= 0)         north = chunk.get(x, y, z-1);
+                else if (nb && nb[5]) north = nb[5]->get(x, y, CHUNK_D-1);
 
-                at<CHUNK_W,CHUNK_H>(maskS, x, y) = visible(cur, south) ? cur : BlockType::Air;
-                at<CHUNK_W,CHUNK_H>(maskN, x, y) = visible(cur, north) ? cur : BlockType::Air;
+                at<CHUNK_W,CHUNK_H>(maskOS, x, y) = visibleOpaque(cur, south)      ? cur : BlockType::Air;
+                at<CHUNK_W,CHUNK_H>(maskON, x, y) = visibleOpaque(cur, north)      ? cur : BlockType::Air;
+                at<CHUNK_W,CHUNK_H>(maskTS, x, y) = visibleTransparent(cur, south) ? cur : BlockType::Air;
+                at<CHUNK_W,CHUNK_H>(maskTN, x, y) = visibleTransparent(cur, north) ? cur : BlockType::Air;
             }
 
-            // +Z  — CCW from +Z: v0(x,y) → v1(x+w,y) → v2(x+w,y+h) → v3(x,y+h)
-            greedyMerge<CHUNK_W,CHUNK_H>(maskS, [&](int u0,int v0,int w,int h,BlockType bt){
-                const glm::vec3 col = BlockRegistry::get(bt).color();
-                emitQuad(verts,
-                    {ox+u0,   (float)v0,   fz+1},
-                    {ox+u0+w, (float)v0,   fz+1},
-                    {ox+u0+w, (float)v0+h, fz+1},
-                    {ox+u0,   (float)v0+h, fz+1},
-                    {0,0,1}, (float)w, (float)h, col);
-            });
+            auto emitS = [&](std::vector<Vertex>& buf, Mask<CHUNK_W,CHUNK_H>& mask) {
+                greedyMerge<CHUNK_W,CHUNK_H>(mask, [&](int u0,int v0,int w,int h,BlockType bt){
+                    emitQuad(buf,
+                        {ox+u0,  (float)v0,  fz+1}, {ox+u0+w,(float)v0,  fz+1},
+                        {ox+u0+w,(float)v0+h,fz+1}, {ox+u0,  (float)v0+h,fz+1},
+                        {0,0,1}, (float)w, (float)h, blockColor(bt));
+                });
+            };
+            auto emitN = [&](std::vector<Vertex>& buf, Mask<CHUNK_W,CHUNK_H>& mask) {
+                greedyMerge<CHUNK_W,CHUNK_H>(mask, [&](int u0,int v0,int w,int h,BlockType bt){
+                    emitQuad(buf,
+                        {ox+u0+w,(float)v0,  fz}, {ox+u0,  (float)v0,  fz},
+                        {ox+u0,  (float)v0+h,fz}, {ox+u0+w,(float)v0+h,fz},
+                        {0,0,-1}, (float)w, (float)h, blockColor(bt));
+                });
+            };
 
-            // -Z  — CCW from -Z: v0(x+w,y) → v1(x,y) → v2(x,y+h) → v3(x+w,y+h)
-            greedyMerge<CHUNK_W,CHUNK_H>(maskN, [&](int u0,int v0,int w,int h,BlockType bt){
-                const glm::vec3 col = BlockRegistry::get(bt).color();
-                emitQuad(verts,
-                    {ox+u0+w, (float)v0,   fz},
-                    {ox+u0,   (float)v0,   fz},
-                    {ox+u0,   (float)v0+h, fz},
-                    {ox+u0+w, (float)v0+h, fz},
-                    {0,0,-1}, (float)w, (float)h, col);
-            });
+            emitS(data.opaque, maskOS); emitN(data.opaque, maskON);
+            emitS(data.transparent, maskTS); emitN(data.transparent, maskTN);
         }
     }
 };

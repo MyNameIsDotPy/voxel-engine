@@ -19,7 +19,8 @@ public:
     virtual bool isLiquid()      const { return false; }
 
     // Rendering (used until TextureAtlas is ready)
-    virtual glm::vec3 color()    const = 0;  // base RGB color [0..1]
+    virtual glm::vec3 color() const = 0;  // base RGB color [0..1]
+    virtual float     alpha() const { return 1.0f; } // 1 = opaque, <1 = transparent
 
     // Texture atlas slots — set when TextureAtlas (issue #4) is implemented
     virtual uint8_t textureTop()    const { return 0; }

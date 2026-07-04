@@ -52,6 +52,7 @@ static int   winH = WIN_H;
 static float lastX = WIN_W / 2.0f;
 static float lastY = WIN_H / 2.0f;
 static bool  firstMouse = true;
+bool         g_noclip   = false;  // toggled by F key
 
 // ── Callbacks ────────────────────────────────────────────────────────────────
 static void cb_framebuffer(GLFWwindow*, int w, int h) {
@@ -69,14 +70,23 @@ static void cb_key(GLFWwindow* win, int key, int, int action, int) {
         std::cout << "[Debug] Mode: " << debugModeLabel[static_cast<int>(debugMode)] << "\n";
     }
 
-    // Movement keys — track held state
+    // Movement keys
     const bool held = (action != GLFW_RELEASE);
-    if (key == GLFW_KEY_W)          g_input.forward  = held;
-    if (key == GLFW_KEY_S)          g_input.backward = held;
-    if (key == GLFW_KEY_A)          g_input.left     = held;
-    if (key == GLFW_KEY_D)          g_input.right    = held;
-    if (key == GLFW_KEY_SPACE)      g_input.jump     = held;
-    if (key == GLFW_KEY_LEFT_SHIFT) g_input.sprint   = held;
+    if (key == GLFW_KEY_W)             g_input.forward  = held;
+    if (key == GLFW_KEY_S)             g_input.backward = held;
+    if (key == GLFW_KEY_A)             g_input.left     = held;
+    if (key == GLFW_KEY_D)             g_input.right    = held;
+    if (key == GLFW_KEY_SPACE)         g_input.jump     = held;
+    if (key == GLFW_KEY_LEFT_CONTROL)  g_input.down     = held;
+    if (key == GLFW_KEY_LEFT_SHIFT)    g_input.sprint   = held;
+
+    // Noclip toggle
+    if (key == GLFW_KEY_F && action == GLFW_PRESS) {
+        // player is not accessible here — toggle is read in the render loop via a global flag
+        extern bool g_noclip;
+        g_noclip = !g_noclip;
+        std::cout << "[Noclip] " << (g_noclip ? "ON" : "OFF") << "\n";
+    }
 }
 
 static void cb_cursor(GLFWwindow*, double xpos, double ypos) {
@@ -97,7 +107,8 @@ static void cb_cursor(GLFWwindow*, double xpos, double ypos) {
 }
 
 // ── Chunk mesh cache ──────────────────────────────────────────────────────────
-static std::unordered_map<ChunkPos, ChunkMesh, ChunkPosHash> g_meshes;
+struct ChunkRenderData { ChunkMesh opaque; ChunkMesh transparent; };
+static std::unordered_map<ChunkPos, ChunkRenderData, ChunkPosHash> g_meshes;
 
 static void rebuildDirtyMeshes(World& world) {
     for (auto& [pos, chunk] : world.chunks()) {
@@ -112,23 +123,17 @@ static void rebuildDirtyMeshes(World& world) {
             world.getChunk({pos.x,     pos.z - 1}),
         };
 
-        auto verts = MeshBuilder::build(chunk, pos, neighbors);
+        auto data = MeshBuilder::build(chunk, pos, neighbors);
 
-        auto it = g_meshes.find(pos);
-        if (it == g_meshes.end())
-            it = g_meshes.emplace(std::piecewise_construct,
-                                  std::forward_as_tuple(pos),
-                                  std::forward_as_tuple()).first;
-
-        it->second.upload(verts);
+        auto& rd = g_meshes[pos];
+        rd.opaque.upload(data.opaque);
+        rd.transparent.upload(data.transparent);
         chunk.clearDirty();
     }
 
     // Remove meshes for unloaded chunks
-    for (auto it = g_meshes.begin(); it != g_meshes.end(); ) {
-        if (!world.getChunk(it->first)) it = g_meshes.erase(it);
-        else ++it;
-    }
+    for (auto it = g_meshes.begin(); it != g_meshes.end(); )
+        it = world.getChunk(it->first) ? ++it : g_meshes.erase(it);
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
@@ -155,7 +160,8 @@ int main() {
     if (!gladLoadGL(glfwGetProcAddress)) { std::cerr << "Failed to init GLAD\n"; return -1; }
 
     std::cout << "OpenGL " << glGetString(GL_VERSION) << "  |  " << glGetString(GL_RENDERER) << "\n";
-    std::cout << "WASD = move  |  Space = jump  |  Shift = sprint  |  V = debug  |  ESC = quit\n";
+    std::cout << "WASD = move  |  Space = jump/swim up  |  LCtrl = fly down  |  Shift = sprint\n";
+    std::cout << "F = noclip toggle  |  V = debug mode  |  ESC = quit\n";
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
@@ -194,7 +200,8 @@ int main() {
         lastTime = now;
 
         // ── Update ───────────────────────────────────────────────────────────
-        player.handleInput(g_input, lookForward(), lookRight());
+        player.noclip = g_noclip;
+        player.handleInput(g_input, lookForward(), lookRight(), world);
         player.update(dt, world);
         world.update(player.position);
         rebuildDirtyMeshes(world);
@@ -217,19 +224,17 @@ int main() {
         shader.setVec3("lightPos",   lightPos);
         shader.setVec3("viewPos",    eye);
 
+        // ── Pass 1: opaque geometry ───────────────────────────────────────────
         if (debugMode == DebugMode::Solid) {
-            for (auto& [pos, mesh] : g_meshes) mesh.draw();
+            for (auto& [pos, rd] : g_meshes) rd.opaque.draw();
         } else {
-            // Dim base
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-            for (auto& [pos, mesh] : g_meshes) mesh.draw();
+            for (auto& [pos, rd] : g_meshes) rd.opaque.draw();
 
-            // Overlay
             debugShader.use();
             debugShader.setMat4("model",      model);
             debugShader.setMat4("view",       view);
             debugShader.setMat4("projection", proj);
-
             if (debugMode == DebugMode::Wireframe) {
                 debugShader.setVec3("debugColor", wireColor);
                 glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
@@ -239,12 +244,21 @@ int main() {
                 glPolygonMode(GL_FRONT_AND_BACK, GL_POINT);
                 glPointSize(5.0f);
             }
-            for (auto& [pos, mesh] : g_meshes) mesh.draw();
-
+            for (auto& [pos, rd] : g_meshes) rd.opaque.draw();
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
-            glLineWidth(1.0f);
-            glPointSize(1.0f);
+            glLineWidth(1.0f); glPointSize(1.0f);
         }
+
+        // ── Pass 2: transparent geometry (water) ──────────────────────────────
+        glEnable(GL_BLEND);
+        glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+        glDepthMask(GL_FALSE);   // don't write water to depth buffer
+
+        shader.use();            // already bound with correct uniforms
+        for (auto& [pos, rd] : g_meshes) rd.transparent.draw();
+
+        glDepthMask(GL_TRUE);
+        glDisable(GL_BLEND);
 
         glfwSwapBuffers(window);
         glfwPollEvents();
