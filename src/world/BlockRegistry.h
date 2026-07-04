@@ -4,6 +4,7 @@
 #include "voxels/Voxel.h"
 #include "voxels/GrassVoxel.h"
 #include "voxels/DirtVoxel.h"
+#include "voxels/SandVoxel.h"
 #include "voxels/RockVoxel.h"
 #include "voxels/SnowVoxel.h"
 #include "voxels/WaterVoxel.h"
@@ -42,6 +43,7 @@ private:
         new GrassSnowy(),   // GrassSnowy
         new GrassDense(),   // GrassDense
         new DirtVoxel(),    // Dirt
+        new SandVoxel(),    // Sand
         new RockSmooth(),   // RockSmooth
         new RockCracked(),  // RockCracked
         new RockMoss(),     // RockMoss

@@ -15,6 +15,7 @@ enum class BlockType : uint8_t {
 
     // ── Dirt ────────────────────────────────────────────────────────────────
     Dirt,
+    Sand,         // beach / desert subsurface
 
     // ── Rock variants ───────────────────────────────────────────────────────
     RockSmooth,   // plain stone
