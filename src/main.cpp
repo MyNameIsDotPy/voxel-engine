@@ -7,7 +7,6 @@
 #include <unordered_map>
 
 #include "Shader.h"
-#include "Camera.h"
 #include "Types.h"
 #include "world/World.h"
 #include "world/Player.h"
@@ -22,20 +21,36 @@ constexpr char WIN_T[] = "Voxel Engine";
 
 // ── Debug draw mode ───────────────────────────────────────────────────────────
 enum class DebugMode { Solid = 0, Wireframe, Vertices, COUNT };
-static DebugMode debugMode = DebugMode::Solid;
-static const char* debugModeLabel[] = { "Solid", "Wireframe", "Vertices" };
+static DebugMode    debugMode = DebugMode::Solid;
+static const char*  debugModeLabel[] = { "Solid", "Wireframe", "Vertices" };
 
-static void applyDebugMode() {
-    std::cout << "[Debug] Mode: " << debugModeLabel[static_cast<int>(debugMode)] << "\n";
+// ── First-person look ─────────────────────────────────────────────────────────
+static float yaw   = -90.0f; // degrees, starts facing -Z
+static float pitch =   0.0f; // degrees, clamped ±89
+
+static glm::vec3 lookForward() {
+    const float y = glm::radians(yaw);
+    const float p = glm::radians(pitch);
+    return glm::normalize(glm::vec3(
+        std::cos(p) * std::cos(y),
+        std::sin(p),
+        std::cos(p) * std::sin(y)
+    ));
 }
 
-// ── Globals (used by GLFW callbacks) ─────────────────────────────────────────
-static Camera camera;
-static bool   mouseDown = false;
-static float  lastX     = WIN_W / 2.0f;
-static float  lastY     = WIN_H / 2.0f;
-static int    winW      = WIN_W;
-static int    winH      = WIN_H;
+static glm::vec3 lookRight() {
+    return glm::normalize(glm::cross(lookForward(), glm::vec3(0,1,0)));
+}
+
+// ── Input state ───────────────────────────────────────────────────────────────
+static PlayerInput g_input;
+
+// ── Window state ─────────────────────────────────────────────────────────────
+static int   winW = WIN_W;
+static int   winH = WIN_H;
+static float lastX = WIN_W / 2.0f;
+static float lastY = WIN_H / 2.0f;
+static bool  firstMouse = true;
 
 // ── Callbacks ────────────────────────────────────────────────────────────────
 static void cb_framebuffer(GLFWwindow*, int w, int h) {
@@ -50,27 +65,34 @@ static void cb_key(GLFWwindow* win, int key, int, int action, int) {
     if (key == GLFW_KEY_V && action == GLFW_PRESS) {
         int next = (static_cast<int>(debugMode) + 1) % static_cast<int>(DebugMode::COUNT);
         debugMode = static_cast<DebugMode>(next);
-        applyDebugMode();
+        std::cout << "[Debug] Mode: " << debugModeLabel[static_cast<int>(debugMode)] << "\n";
     }
-}
 
-static void cb_mouse_button(GLFWwindow*, int btn, int action, int) {
-    if (btn == GLFW_MOUSE_BUTTON_LEFT)
-        mouseDown = (action == GLFW_PRESS);
+    // Movement keys — track held state
+    const bool held = (action != GLFW_RELEASE);
+    if (key == GLFW_KEY_W)          g_input.forward  = held;
+    if (key == GLFW_KEY_S)          g_input.backward = held;
+    if (key == GLFW_KEY_A)          g_input.left     = held;
+    if (key == GLFW_KEY_D)          g_input.right    = held;
+    if (key == GLFW_KEY_SPACE)      g_input.jump     = held;
+    if (key == GLFW_KEY_LEFT_SHIFT) g_input.sprint   = held;
 }
 
 static void cb_cursor(GLFWwindow*, double xpos, double ypos) {
+    if (firstMouse) {
+        lastX = static_cast<float>(xpos);
+        lastY = static_cast<float>(ypos);
+        firstMouse = false;
+    }
+
     const float dx = static_cast<float>(xpos) - lastX;
-    const float dy = static_cast<float>(ypos) - lastY;
+    const float dy = lastY - static_cast<float>(ypos); // inverted Y
     lastX = static_cast<float>(xpos);
     lastY = static_cast<float>(ypos);
 
-    if (mouseDown)
-        camera.orbit(dx * 0.3f, -dy * 0.3f);
-}
-
-static void cb_scroll(GLFWwindow*, double, double dy) {
-    camera.zoom(static_cast<float>(dy) * 0.4f);
+    yaw   += dx * 0.12f;
+    pitch += dy * 0.12f;
+    pitch  = std::clamp(pitch, -89.0f, 89.0f);
 }
 
 // ── Chunk mesh cache ──────────────────────────────────────────────────────────
@@ -80,15 +102,13 @@ static void rebuildDirtyMeshes(World& world) {
     for (auto& [pos, chunk] : world.chunks()) {
         if (!chunk.isDirty()) continue;
 
-        // Wire up horizontal neighbors so shared boundary faces are culled.
-        // Order must match MeshBuilder::FACES: +Y,-Y,+X,-X,+Z,-Z
         const Chunk* neighbors[6] = {
-            nullptr,                                     // +Y — no vertical stacking yet
-            nullptr,                                     // -Y
-            world.getChunk({pos.x + 1, pos.z}),         // +X East
-            world.getChunk({pos.x - 1, pos.z}),         // -X West
-            world.getChunk({pos.x,     pos.z + 1}),     // +Z South
-            world.getChunk({pos.x,     pos.z - 1}),     // -Z North
+            nullptr,
+            nullptr,
+            world.getChunk({pos.x + 1, pos.z}),
+            world.getChunk({pos.x - 1, pos.z}),
+            world.getChunk({pos.x,     pos.z + 1}),
+            world.getChunk({pos.x,     pos.z - 1}),
         };
 
         auto verts = MeshBuilder::build(chunk, pos, neighbors);
@@ -101,112 +121,100 @@ static void rebuildDirtyMeshes(World& world) {
 
         it->second.upload(verts);
         chunk.clearDirty();
+    }
 
-        std::cout << "[Mesh] Chunk (" << pos.x << "," << pos.z
-                  << ") rebuilt — " << verts.size() << " vertices\n";
+    // Remove meshes for unloaded chunks
+    for (auto it = g_meshes.begin(); it != g_meshes.end(); ) {
+        if (!world.getChunk(it->first)) it = g_meshes.erase(it);
+        else ++it;
     }
 }
 
 // ── main ─────────────────────────────────────────────────────────────────────
 int main() {
-    if (!glfwInit()) {
-        std::cerr << "Failed to initialize GLFW\n";
-        return -1;
-    }
+    if (!glfwInit()) { std::cerr << "Failed to init GLFW\n"; return -1; }
+
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
     glfwWindowHint(GLFW_SAMPLES, 4);
-
 #ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
 #endif
 
     GLFWwindow* window = glfwCreateWindow(WIN_W, WIN_H, WIN_T, nullptr, nullptr);
-    if (!window) {
-        std::cerr << "Failed to create GLFW window\n";
-        glfwTerminate();
-        return -1;
-    }
+    if (!window) { std::cerr << "Failed to create window\n"; glfwTerminate(); return -1; }
+
     glfwMakeContextCurrent(window);
+    glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_DISABLED); // capture cursor
     glfwSetFramebufferSizeCallback(window, cb_framebuffer);
     glfwSetKeyCallback(window,         cb_key);
-    glfwSetMouseButtonCallback(window, cb_mouse_button);
     glfwSetCursorPosCallback(window,   cb_cursor);
-    glfwSetScrollCallback(window,      cb_scroll);
 
-    if (!gladLoadGL(glfwGetProcAddress)) {
-        std::cerr << "Failed to initialize GLAD\n";
-        return -1;
-    }
+    if (!gladLoadGL(glfwGetProcAddress)) { std::cerr << "Failed to init GLAD\n"; return -1; }
 
-    std::cout << "OpenGL " << glGetString(GL_VERSION) << "  |  "
-              << glGetString(GL_RENDERER) << "\n";
-    std::cout << "Controls: left-drag to orbit, scroll to zoom, ESC to quit\n";
-    std::cout << "Debug   : V → cycle Solid / Wireframe / Vertices\n";
+    std::cout << "OpenGL " << glGetString(GL_VERSION) << "  |  " << glGetString(GL_RENDERER) << "\n";
+    std::cout << "WASD = move  |  Space = jump  |  Shift = sprint  |  V = debug  |  ESC = quit\n";
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
-    glEnable(GL_CULL_FACE);   // skip back faces — MeshBuilder emits CCW quads
+    glEnable(GL_CULL_FACE);
 
-    // ── World setup — single 16x16 chunk ─────────────────────────────────────
-    World world;
-    ChunkPos origin{0, 0};
-    Chunk& c = world.chunks()[origin];
-    TerrainGenerator::fill(c, origin);
+    // ── World + Player ────────────────────────────────────────────────────────
+    World  world;
     Player player;
+
     world.update(player.position);
-    const RayHit startupHit = RayCast::cast(player.eyePos(), glm::vec3(0.0f, -1.0f, 0.0f), 128.0f, world);
-    std::cout << "[Dev2] Player eye: " << player.eyePos().x << ", "
-              << player.eyePos().y << ", " << player.eyePos().z
-              << " | ground ray: " << (startupHit.hit ? "hit" : "miss") << "\n";
-
     rebuildDirtyMeshes(world);
-
-    // ── Camera — look down at the flat chunk ──────────────────────────────────
-    camera.target   = glm::vec3(CHUNK_W * 0.5f, 0.0f, CHUNK_D * 0.5f);
-    camera.distance = 24.0f;
-    camera.pitch    = 45.0f;
-    camera.yaw      = 45.0f;
 
     // ── Shaders ───────────────────────────────────────────────────────────────
     Shader shader("shaders/basic.vert", "shaders/basic.frag");
     Shader debugShader("shaders/debug.vert", "shaders/debug.frag");
 
-    const glm::vec3 lightPos (8.0f, 20.0f,  8.0f);
-    const glm::vec3 wireColor (1.0f,  1.0f,  0.0f);
-    const glm::vec3 pointColor(1.0f,  0.3f,  0.3f);
+    const glm::vec3 lightPos  ( 64.0f, 80.0f,  64.0f);
+    const glm::vec3 wireColor ( 1.0f,  1.0f,   0.0f);
+    const glm::vec3 pointColor( 1.0f,  0.3f,   0.3f);
+
+    double lastTime = glfwGetTime();
 
     // ── Render loop ───────────────────────────────────────────────────────────
     while (!glfwWindowShouldClose(window)) {
+        const double now = glfwGetTime();
+        const float  dt  = static_cast<float>(now - lastTime);
+        lastTime = now;
+
+        // ── Update ───────────────────────────────────────────────────────────
+        player.handleInput(g_input, lookForward(), lookRight());
+        player.update(dt, world);
+        world.update(player.position);
+        rebuildDirtyMeshes(world);
+
+        // ── View / projection ─────────────────────────────────────────────────
+        const glm::vec3 eye    = player.eyePos();
+        const glm::mat4 view   = glm::lookAt(eye, eye + lookForward(), glm::vec3(0,1,0));
+        const float     aspect = static_cast<float>(winW) / static_cast<float>(winH);
+        const glm::mat4 proj   = glm::perspective(glm::radians(90.0f), aspect, 0.05f, 500.0f);
+        const glm::mat4 model  = glm::mat4(1.0f);
+
+        // ── Draw ──────────────────────────────────────────────────────────────
         glClearColor(0.45f, 0.70f, 0.95f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        const float     aspect = static_cast<float>(winW) / static_cast<float>(winH);
-        const glm::mat4 model  = glm::mat4(1.0f);
-        const glm::mat4 view   = camera.getViewMatrix();
-        const glm::mat4 proj   = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 200.0f);
+        shader.use();
+        shader.setMat4("model",      model);
+        shader.setMat4("view",       view);
+        shader.setMat4("projection", proj);
+        shader.setVec3("lightPos",   lightPos);
+        shader.setVec3("viewPos",    eye);
 
         if (debugMode == DebugMode::Solid) {
-            shader.use();
-            shader.setMat4("model",      model);
-            shader.setMat4("view",       view);
-            shader.setMat4("projection", proj);
-            shader.setVec3("lightPos",   lightPos);
-            shader.setVec3("viewPos",    camera.getPosition());
             for (auto& [pos, mesh] : g_meshes) mesh.draw();
         } else {
-            // Dim solid base pass
-            shader.use();
-            shader.setMat4("model",      model);
-            shader.setMat4("view",       view);
-            shader.setMat4("projection", proj);
-            shader.setVec3("lightPos",   lightPos);
-            shader.setVec3("viewPos",    camera.getPosition());
+            // Dim base
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             for (auto& [pos, mesh] : g_meshes) mesh.draw();
 
-            // Debug overlay pass
+            // Overlay
             debugShader.use();
             debugShader.setMat4("model",      model);
             debugShader.setMat4("view",       view);
