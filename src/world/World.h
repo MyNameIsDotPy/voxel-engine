@@ -31,6 +31,14 @@ public:
             if (m_chunks.find(cp) == m_chunks.end()) {
                 Chunk& c = m_chunks[cp];
                 TerrainGenerator::fill(c, cp);
+
+                // New chunk arrived — force neighbors to re-mesh so their
+                // boundary water/solid faces update correctly
+                constexpr int off[4][2] = {{1,0},{-1,0},{0,1},{0,-1}};
+                for (auto& o : off) {
+                    auto it = m_chunks.find({cp.x + o[0], cp.z + o[1]});
+                    if (it != m_chunks.end()) it->second.markDirty();
+                }
             }
         }
 

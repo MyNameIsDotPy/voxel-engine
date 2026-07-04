@@ -186,6 +186,28 @@ int main() {
     // ── Shaders ───────────────────────────────────────────────────────────────
     Shader shader("shaders/basic.vert", "shaders/basic.frag");
     Shader debugShader("shaders/debug.vert", "shaders/debug.frag");
+    Shader overlayShader("shaders/overlay.vert", "shaders/overlay.frag");
+
+    // ── Full-screen overlay quad (NDC) ────────────────────────────────────────
+    // Used for the underwater tint
+    {
+        // will be set up below
+    }
+    unsigned int overlayVAO, overlayVBO;
+    {
+        const float quad[] = {
+            -1.f,-1.f,   1.f,-1.f,   1.f, 1.f,
+            -1.f,-1.f,   1.f, 1.f,  -1.f, 1.f,
+        };
+        glGenVertexArrays(1, &overlayVAO);
+        glGenBuffers(1, &overlayVBO);
+        glBindVertexArray(overlayVAO);
+        glBindBuffer(GL_ARRAY_BUFFER, overlayVBO);
+        glBufferData(GL_ARRAY_BUFFER, sizeof(quad), quad, GL_STATIC_DRAW);
+        glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 2 * sizeof(float), nullptr);
+        glEnableVertexAttribArray(0);
+        glBindVertexArray(0);
+    }
 
     const glm::vec3 lightPos  ( 64.0f, 80.0f,  64.0f);
     const glm::vec3 wireColor ( 1.0f,  1.0f,   0.0f);
@@ -214,7 +236,12 @@ int main() {
         const glm::mat4 model  = glm::mat4(1.0f);
 
         // ── Draw ──────────────────────────────────────────────────────────────
-        glClearColor(0.45f, 0.70f, 0.95f, 1.0f);
+        const bool underwater = player.isInWater(world);
+
+        if (underwater)
+            glClearColor(0.04f, 0.18f, 0.35f, 1.0f); // deep murky blue
+        else
+            glClearColor(0.45f, 0.70f, 0.95f, 1.0f); // sky blue
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         shader.use();
@@ -252,13 +279,29 @@ int main() {
         // ── Pass 2: transparent geometry (water) ──────────────────────────────
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
-        glDepthMask(GL_FALSE);   // don't write water to depth buffer
+        glDepthMask(GL_FALSE);
 
-        shader.use();            // already bound with correct uniforms
+        shader.use();
         for (auto& [pos, rd] : g_meshes) rd.transparent.draw();
 
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
+
+        // ── Pass 3: underwater screen tint ────────────────────────────────────
+        if (underwater) {
+            glEnable(GL_BLEND);
+            glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+            glDisable(GL_DEPTH_TEST);
+
+            overlayShader.use();
+            glUniform4f(glGetUniformLocation(overlayShader.ID, "overlayColor"),
+                        0.04f, 0.22f, 0.55f, 0.45f);
+            glBindVertexArray(overlayVAO);
+            glDrawArrays(GL_TRIANGLES, 0, 6);
+
+            glEnable(GL_DEPTH_TEST);
+            glDisable(GL_BLEND);
+        }
 
         glfwSwapBuffers(window);
         glfwPollEvents();
