@@ -238,7 +238,10 @@ int main() {
         // ── Draw ──────────────────────────────────────────────────────────────
         const bool underwater = player.isInWater(world);
 
-        glClearColor(0.45f, 0.70f, 0.95f, 1.0f);
+        if (underwater)
+            glClearColor(0.04f, 0.18f, 0.35f, 1.0f); // deep murky blue
+        else
+            glClearColor(0.45f, 0.70f, 0.95f, 1.0f); // sky blue
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         shader.use();
@@ -286,32 +289,13 @@ int main() {
 
         // ── Pass 3: underwater screen tint ────────────────────────────────────
         if (underwater) {
-            // Project the water surface plane onto the screen to find where
-            // the tint should stop (above the water line = no tint).
-            const float waterWorldY = static_cast<float>(TerrainGenerator::SEA_LEVEL) + 1.0f;
-
-            float waterLineNDC = 2.0f; // default: full screen tinted
-
-            glm::vec3 fwdFlat(lookForward().x, 0.0f, lookForward().z);
-            const float fwdLen = glm::length(fwdFlat);
-            if (fwdLen > 0.01f) {
-                // Place a point on the water surface 50 units in front (horizontally)
-                fwdFlat = glm::normalize(fwdFlat) * 50.0f;
-                const glm::vec3 wp(eye.x + fwdFlat.x, waterWorldY, eye.z + fwdFlat.z);
-                const glm::vec4 clip = proj * view * glm::vec4(wp, 1.0f);
-                if (clip.w > 0.001f)
-                    waterLineNDC = glm::clamp(clip.y / clip.w, -1.5f, 3.0f);
-            }
-
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glDisable(GL_DEPTH_TEST);
 
             overlayShader.use();
-            overlayShader.setVec4("overlayColor", glm::vec4(0.04f, 0.22f, 0.55f, 0.45f));
-            overlayShader.setFloat("waterLineNDC", waterLineNDC);
-            overlayShader.setFloat("screenHeight", static_cast<float>(winH));
-
+            glUniform4f(glGetUniformLocation(overlayShader.ID, "overlayColor"),
+                        0.04f, 0.22f, 0.55f, 0.45f);
             glBindVertexArray(overlayVAO);
             glDrawArrays(GL_TRIANGLES, 0, 6);
 
