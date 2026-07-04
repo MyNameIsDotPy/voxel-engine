@@ -15,23 +15,10 @@ public:
         return 6; // flat terrain at y = 6
     }
 
-    static void fill(Chunk& chunk, ChunkPos pos) {
+    static void fill(Chunk& chunk, ChunkPos /*pos*/) {
+        // Flat world: single layer of grass at y = 0
         for (int x = 0; x < CHUNK_W; ++x)
         for (int z = 0; z < CHUNK_D; ++z)
-        {
-            const int worldX = pos.x * CHUNK_W + x;
-            const int worldZ = pos.z * CHUNK_D + z;
-            const int surface = surfaceHeight(worldX, worldZ);
-
-            for (int y = 0; y < CHUNK_H; ++y) {
-                BlockType bt = BlockType::Air;
-
-                if      (y == surface)     bt = BlockType::Grass;
-                else if (y >= surface - 3) bt = BlockType::Dirt;
-                else if (y > 0)            bt = BlockType::Stone;
-
-                chunk.set(x, y, z, bt);
-            }
-        }
+            chunk.set(x, 0, z, BlockType::Grass);
     }
 };

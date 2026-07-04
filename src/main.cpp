@@ -78,7 +78,18 @@ static void rebuildDirtyMeshes(World& world) {
     for (auto& [pos, chunk] : world.chunks()) {
         if (!chunk.isDirty()) continue;
 
-        auto verts = MeshBuilder::build(chunk, pos);
+        // Wire up horizontal neighbors so shared boundary faces are culled.
+        // Order must match MeshBuilder::FACES: +Y,-Y,+X,-X,+Z,-Z
+        const Chunk* neighbors[6] = {
+            nullptr,                                     // +Y — no vertical stacking yet
+            nullptr,                                     // -Y
+            world.getChunk({pos.x + 1, pos.z}),         // +X East
+            world.getChunk({pos.x - 1, pos.z}),         // -X West
+            world.getChunk({pos.x,     pos.z + 1}),     // +Z South
+            world.getChunk({pos.x,     pos.z - 1}),     // -Z North
+        };
+
+        auto verts = MeshBuilder::build(chunk, pos, neighbors);
 
         auto it = g_meshes.find(pos);
         if (it == g_meshes.end())
@@ -136,25 +147,25 @@ int main() {
     glEnable(GL_MULTISAMPLE);
     glEnable(GL_CULL_FACE);   // skip back faces — MeshBuilder emits CCW quads
 
-    // ── World setup ───────────────────────────────────────────────────────────
+    // ── World setup — single 16x16 chunk ─────────────────────────────────────
     World world;
-    // Seed the initial chunk at origin
-    world.update(glm::vec3(0.0f));
+    ChunkPos origin{0, 0};
+    Chunk& c = world.chunks()[origin];
+    TerrainGenerator::fill(c, origin);
 
-    // Build meshes for all freshly generated chunks
     rebuildDirtyMeshes(world);
 
-    // ── Camera — frame the chunk ──────────────────────────────────────────────
-    camera.target   = glm::vec3(CHUNK_W * 0.5f, 6.0f, CHUNK_D * 0.5f);
-    camera.distance = 30.0f;
-    camera.pitch    = 25.0f;
+    // ── Camera — look down at the flat chunk ──────────────────────────────────
+    camera.target   = glm::vec3(CHUNK_W * 0.5f, 0.0f, CHUNK_D * 0.5f);
+    camera.distance = 24.0f;
+    camera.pitch    = 45.0f;
     camera.yaw      = 45.0f;
 
     // ── Shaders ───────────────────────────────────────────────────────────────
     Shader shader("shaders/basic.vert", "shaders/basic.frag");
     Shader debugShader("shaders/debug.vert", "shaders/debug.frag");
 
-    const glm::vec3 lightPos(20.0f, 40.0f, 20.0f);
+        const glm::vec3 lightPos(8.0f, 20.0f, 8.0f);
     // Per-block-type colors used until TextureAtlas is ready
     const glm::vec3 grassColor(0.27f, 0.54f, 0.18f);
     const glm::vec3 dirtColor (0.44f, 0.28f, 0.14f);
@@ -172,7 +183,7 @@ int main() {
         const float     aspect = static_cast<float>(winW) / static_cast<float>(winH);
         const glm::mat4 model  = glm::mat4(1.0f);
         const glm::mat4 view   = camera.getViewMatrix();
-        const glm::mat4 proj   = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 500.0f);
+        const glm::mat4 proj   = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 200.0f);
 
         auto drawChunks = [&](Shader& sh, bool debugOverlay) {
             sh.use();
