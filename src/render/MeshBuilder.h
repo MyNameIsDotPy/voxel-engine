@@ -59,8 +59,8 @@ public:
                 }
                 // else: out-of-world edge → treat as air (face is visible)
 
-                if (!BlockRegistry::get(neighbor).solid ||
-                     BlockRegistry::get(neighbor).transparent)
+                if (!BlockRegistry::get(neighbor).isSolid() ||
+                     BlockRegistry::get(neighbor).isTransparent())
                 {
                     emitFace(verts, face,
                              ox + x, static_cast<float>(y), oz + z,
@@ -114,9 +114,10 @@ private:
     static void emitFace(std::vector<Vertex>& out,
                          const Face& face,
                          float wx, float wy, float wz,
-                         BlockType /*bt*/)  // bt reserved for texture UVs later
+                         BlockType bt)
     {
         const glm::vec3 origin(wx, wy, wz);
+        const glm::vec3 col = BlockRegistry::get(bt).color();
 
         // Two triangles: 0-1-2 and 0-2-3
         const int idx[6] = { 0, 1, 2, 0, 2, 3 };
@@ -124,7 +125,8 @@ private:
             out.push_back({
                 origin + face.v[i],
                 face.normal,
-                face.uv[i]
+                face.uv[i],
+                col
             });
         }
     }

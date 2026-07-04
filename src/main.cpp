@@ -165,19 +165,13 @@ int main() {
     Shader shader("shaders/basic.vert", "shaders/basic.frag");
     Shader debugShader("shaders/debug.vert", "shaders/debug.frag");
 
-        const glm::vec3 lightPos(8.0f, 20.0f, 8.0f);
-    // Per-block-type colors used until TextureAtlas is ready
-    const glm::vec3 grassColor(0.27f, 0.54f, 0.18f);
-    const glm::vec3 dirtColor (0.44f, 0.28f, 0.14f);
-    const glm::vec3 stoneColor(0.50f, 0.50f, 0.50f);
-
-    // Debug overlay colors
-    const glm::vec3 wireColor (1.0f, 1.0f, 0.0f);
-    const glm::vec3 pointColor(1.0f, 0.3f, 0.3f);
+    const glm::vec3 lightPos (8.0f, 20.0f,  8.0f);
+    const glm::vec3 wireColor (1.0f,  1.0f,  0.0f);
+    const glm::vec3 pointColor(1.0f,  0.3f,  0.3f);
 
     // ── Render loop ───────────────────────────────────────────────────────────
     while (!glfwWindowShouldClose(window)) {
-        glClearColor(0.45f, 0.70f, 0.95f, 1.0f); // sky blue
+        glClearColor(0.45f, 0.70f, 0.95f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
         const float     aspect = static_cast<float>(winW) / static_cast<float>(winH);
@@ -185,45 +179,26 @@ int main() {
         const glm::mat4 view   = camera.getViewMatrix();
         const glm::mat4 proj   = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 200.0f);
 
-        auto drawChunks = [&](Shader& sh, bool debugOverlay) {
-            sh.use();
-            sh.setMat4("model",      model);
-            sh.setMat4("view",       view);
-            sh.setMat4("projection", proj);
-
-            if (!debugOverlay) {
-                sh.setVec3("lightPos", lightPos);
-                sh.setVec3("viewPos",  camera.getPosition());
-                // Grass color as default — per-block coloring comes with TextureAtlas
-                sh.setVec3("objectColor", grassColor);
-            }
-
-            for (auto& [pos, mesh] : g_meshes) {
-                if (!debugOverlay)
-                    sh.setVec3("objectColor", grassColor); // placeholder
-                else
-                    sh.setVec3("debugColor",
-                               debugMode == DebugMode::Wireframe ? wireColor : pointColor);
-
-                mesh.draw();
-            }
-        };
-
         if (debugMode == DebugMode::Solid) {
-            drawChunks(shader, false);
-        } else {
-            // Dim solid base
             shader.use();
-            shader.setMat4("model",       model);
-            shader.setMat4("view",        view);
-            shader.setMat4("projection",  proj);
-            shader.setVec3("lightPos",    lightPos);
-            shader.setVec3("viewPos",     camera.getPosition());
-            shader.setVec3("objectColor", grassColor * 0.3f);
+            shader.setMat4("model",      model);
+            shader.setMat4("view",       view);
+            shader.setMat4("projection", proj);
+            shader.setVec3("lightPos",   lightPos);
+            shader.setVec3("viewPos",    camera.getPosition());
+            for (auto& [pos, mesh] : g_meshes) mesh.draw();
+        } else {
+            // Dim solid base pass
+            shader.use();
+            shader.setMat4("model",      model);
+            shader.setMat4("view",       view);
+            shader.setMat4("projection", proj);
+            shader.setVec3("lightPos",   lightPos);
+            shader.setVec3("viewPos",    camera.getPosition());
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             for (auto& [pos, mesh] : g_meshes) mesh.draw();
 
-            // Debug overlay
+            // Debug overlay pass
             debugShader.use();
             debugShader.setMat4("model",      model);
             debugShader.setMat4("view",       view);

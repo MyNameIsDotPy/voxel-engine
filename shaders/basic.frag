@@ -2,33 +2,32 @@
 
 in vec3 FragPos;
 in vec3 Normal;
+in vec3 VertColor;
 
 out vec4 FragColor;
 
 uniform vec3 lightPos;
 uniform vec3 viewPos;
-uniform vec3 objectColor;
 
 void main() {
     // Ambient
-    vec3 ambient = 0.18 * objectColor;
+    vec3 ambient = 0.18 * VertColor;
 
     // Diffuse
     vec3 norm     = normalize(Normal);
     vec3 lightDir = normalize(lightPos - FragPos);
     float diff    = max(dot(norm, lightDir), 0.0);
-    vec3 diffuse  = diff * objectColor;
+    vec3 diffuse  = diff * VertColor;
 
     // Specular (Blinn-Phong)
-    vec3  viewDir    = normalize(viewPos - FragPos);
-    vec3  halfDir    = normalize(lightDir + viewDir);
-    float spec       = pow(max(dot(norm, halfDir), 0.0), 64.0);
-    vec3  specular   = spec * vec3(0.6);
+    vec3  viewDir  = normalize(viewPos - FragPos);
+    vec3  halfDir  = normalize(lightDir + viewDir);
+    float spec     = pow(max(dot(norm, halfDir), 0.0), 64.0);
+    vec3  specular = spec * vec3(0.4);
 
-    // Edge darkening for a subtle voxel feel
-    float rim = 1.0 - max(dot(viewDir, norm), 0.0);
-    rim       = pow(rim, 3.0) * 0.25;
+    // Subtle rim
+    float rim = pow(1.0 - max(dot(viewDir, norm), 0.0), 3.0) * 0.2;
 
-    vec3 result = ambient + diffuse + specular + rim * objectColor;
+    vec3 result = ambient + diffuse + specular + rim * VertColor;
     FragColor   = vec4(result, 1.0);
 }

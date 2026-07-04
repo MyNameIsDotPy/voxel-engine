@@ -32,6 +32,11 @@ public:
             reinterpret_cast<void*>(offsetof(Vertex, uv)));
         glEnableVertexAttribArray(2);
 
+        // color     (location = 3)
+        glVertexAttribPointer(3, 3, GL_FLOAT, GL_FALSE, sizeof(Vertex),
+            reinterpret_cast<void*>(offsetof(Vertex, color)));
+        glEnableVertexAttribArray(3);
+
         glBindVertexArray(0);
     }
 

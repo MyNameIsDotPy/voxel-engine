@@ -2,37 +2,37 @@
 
 #include <cstdint>
 
-// ── Block types ───────────────────────────────────────────────────────────────
+// ── BlockType ─────────────────────────────────────────────────────────────────
 // Stored as uint8_t inside Chunk — keep total count under 256.
 enum class BlockType : uint8_t {
     Air = 0,
-    Grass,
+
+    // ── Grass variants ───────────────────────────────────────────────────────
+    GrassPlain,   // standard temperate
+    GrassDry,     // arid / yellowed
+    GrassSnowy,   // frost-covered
+    GrassDense,   // jungle / deep green
+
+    // ── Dirt ────────────────────────────────────────────────────────────────
     Dirt,
-    Stone,
-    Sand,
-    Gravel,
+
+    // ── Rock variants ───────────────────────────────────────────────────────
+    RockSmooth,   // plain stone
+    RockCracked,  // weathered, darker
+    RockMoss,     // mossy stone
+
+    // ── Snow ────────────────────────────────────────────────────────────────
+    Snow,
+
+    // ── Liquids ─────────────────────────────────────────────────────────────
     Water,
-    Wood,
-    Leaves,
-    COUNT   // sentinel — always last
+    Lava,
+
+    COUNT  // sentinel — always last
 };
 
-// ── Face indices used for per-face texture lookup ────────────────────────────
+// ── BlockFace ─────────────────────────────────────────────────────────────────
 enum class BlockFace : uint8_t {
-    Top = 0,
-    Bottom,
-    North,  // -Z
-    South,  // +Z
-    West,   // -X
-    East,   // +X
+    Top = 0, Bottom, North, South, West, East,
     COUNT
-};
-
-// ── Per-block static properties ───────────────────────────────────────────────
-struct BlockDef {
-    const char* name;
-    bool        solid;       // blocks movement and face culling
-    bool        transparent; // faces next to this block are still rendered
-    // Texture atlas row index per face (matched to TextureAtlas layout)
-    uint8_t     textures[static_cast<int>(BlockFace::COUNT)];
 };
