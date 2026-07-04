@@ -4,14 +4,28 @@
 #include <glm/gtc/matrix_transform.hpp>
 
 #include <iostream>
+#include <unordered_map>
 
 #include "Shader.h"
 #include "Camera.h"
+#include "Types.h"
+#include "world/World.h"
+#include "render/ChunkMesh.h"
+#include "render/MeshBuilder.h"
 
 // ── Window config ─────────────────────────────────────────────────────────────
-constexpr int   WIN_W  = 1280;
-constexpr int   WIN_H  = 720;
-constexpr char  WIN_T[] = "Voxel Engine";
+constexpr int  WIN_W  = 1280;
+constexpr int  WIN_H  = 720;
+constexpr char WIN_T[] = "Voxel Engine";
+
+// ── Debug draw mode ───────────────────────────────────────────────────────────
+enum class DebugMode { Solid = 0, Wireframe, Vertices, COUNT };
+static DebugMode debugMode = DebugMode::Solid;
+static const char* debugModeLabel[] = { "Solid", "Wireframe", "Vertices" };
+
+static void applyDebugMode() {
+    std::cout << "[Debug] Mode: " << debugModeLabel[static_cast<int>(debugMode)] << "\n";
+}
 
 // ── Globals (used by GLFW callbacks) ─────────────────────────────────────────
 static Camera camera;
@@ -30,6 +44,12 @@ static void cb_framebuffer(GLFWwindow*, int w, int h) {
 static void cb_key(GLFWwindow* win, int key, int, int action, int) {
     if (key == GLFW_KEY_ESCAPE && action == GLFW_PRESS)
         glfwSetWindowShouldClose(win, GLFW_TRUE);
+
+    if (key == GLFW_KEY_V && action == GLFW_PRESS) {
+        int next = (static_cast<int>(debugMode) + 1) % static_cast<int>(DebugMode::COUNT);
+        debugMode = static_cast<DebugMode>(next);
+        applyDebugMode();
+    }
 }
 
 static void cb_mouse_button(GLFWwindow*, int btn, int action, int) {
@@ -51,58 +71,31 @@ static void cb_scroll(GLFWwindow*, double, double dy) {
     camera.zoom(static_cast<float>(dy) * 0.4f);
 }
 
-// ── Cube geometry ─────────────────────────────────────────────────────────────
-// 36 vertices, each: position(3) + normal(3)
-// clang-format off
-static constexpr float CUBE_VERTS[] = {
-    // Back face
-    -0.5f,-0.5f,-0.5f,  0.0f, 0.0f,-1.0f,
-     0.5f,-0.5f,-0.5f,  0.0f, 0.0f,-1.0f,
-     0.5f, 0.5f,-0.5f,  0.0f, 0.0f,-1.0f,
-     0.5f, 0.5f,-0.5f,  0.0f, 0.0f,-1.0f,
-    -0.5f, 0.5f,-0.5f,  0.0f, 0.0f,-1.0f,
-    -0.5f,-0.5f,-0.5f,  0.0f, 0.0f,-1.0f,
-    // Front face
-    -0.5f,-0.5f, 0.5f,  0.0f, 0.0f, 1.0f,
-     0.5f,-0.5f, 0.5f,  0.0f, 0.0f, 1.0f,
-     0.5f, 0.5f, 0.5f,  0.0f, 0.0f, 1.0f,
-     0.5f, 0.5f, 0.5f,  0.0f, 0.0f, 1.0f,
-    -0.5f, 0.5f, 0.5f,  0.0f, 0.0f, 1.0f,
-    -0.5f,-0.5f, 0.5f,  0.0f, 0.0f, 1.0f,
-    // Left face
-    -0.5f, 0.5f, 0.5f, -1.0f, 0.0f, 0.0f,
-    -0.5f, 0.5f,-0.5f, -1.0f, 0.0f, 0.0f,
-    -0.5f,-0.5f,-0.5f, -1.0f, 0.0f, 0.0f,
-    -0.5f,-0.5f,-0.5f, -1.0f, 0.0f, 0.0f,
-    -0.5f,-0.5f, 0.5f, -1.0f, 0.0f, 0.0f,
-    -0.5f, 0.5f, 0.5f, -1.0f, 0.0f, 0.0f,
-    // Right face
-     0.5f, 0.5f, 0.5f,  1.0f, 0.0f, 0.0f,
-     0.5f, 0.5f,-0.5f,  1.0f, 0.0f, 0.0f,
-     0.5f,-0.5f,-0.5f,  1.0f, 0.0f, 0.0f,
-     0.5f,-0.5f,-0.5f,  1.0f, 0.0f, 0.0f,
-     0.5f,-0.5f, 0.5f,  1.0f, 0.0f, 0.0f,
-     0.5f, 0.5f, 0.5f,  1.0f, 0.0f, 0.0f,
-    // Bottom face
-    -0.5f,-0.5f,-0.5f,  0.0f,-1.0f, 0.0f,
-     0.5f,-0.5f,-0.5f,  0.0f,-1.0f, 0.0f,
-     0.5f,-0.5f, 0.5f,  0.0f,-1.0f, 0.0f,
-     0.5f,-0.5f, 0.5f,  0.0f,-1.0f, 0.0f,
-    -0.5f,-0.5f, 0.5f,  0.0f,-1.0f, 0.0f,
-    -0.5f,-0.5f,-0.5f,  0.0f,-1.0f, 0.0f,
-    // Top face
-    -0.5f, 0.5f,-0.5f,  0.0f, 1.0f, 0.0f,
-     0.5f, 0.5f,-0.5f,  0.0f, 1.0f, 0.0f,
-     0.5f, 0.5f, 0.5f,  0.0f, 1.0f, 0.0f,
-     0.5f, 0.5f, 0.5f,  0.0f, 1.0f, 0.0f,
-    -0.5f, 0.5f, 0.5f,  0.0f, 1.0f, 0.0f,
-    -0.5f, 0.5f,-0.5f,  0.0f, 1.0f, 0.0f,
-};
-// clang-format on
+// ── Chunk mesh cache ──────────────────────────────────────────────────────────
+static std::unordered_map<ChunkPos, ChunkMesh, ChunkPosHash> g_meshes;
+
+static void rebuildDirtyMeshes(World& world) {
+    for (auto& [pos, chunk] : world.chunks()) {
+        if (!chunk.isDirty()) continue;
+
+        auto verts = MeshBuilder::build(chunk, pos);
+
+        auto it = g_meshes.find(pos);
+        if (it == g_meshes.end())
+            it = g_meshes.emplace(std::piecewise_construct,
+                                  std::forward_as_tuple(pos),
+                                  std::forward_as_tuple()).first;
+
+        it->second.upload(verts);
+        chunk.clearDirty();
+
+        std::cout << "[Mesh] Chunk (" << pos.x << "," << pos.z
+                  << ") rebuilt — " << verts.size() << " vertices\n";
+    }
+}
 
 // ── main ─────────────────────────────────────────────────────────────────────
 int main() {
-    // Init GLFW
     if (!glfwInit()) {
         std::cerr << "Failed to initialize GLFW\n";
         return -1;
@@ -110,7 +103,7 @@ int main() {
     glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
     glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
     glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_SAMPLES, 4); // MSAA 4x
+    glfwWindowHint(GLFW_SAMPLES, 4);
 
 #ifdef __APPLE__
     glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GL_TRUE);
@@ -129,7 +122,6 @@ int main() {
     glfwSetCursorPosCallback(window,   cb_cursor);
     glfwSetScrollCallback(window,      cb_scroll);
 
-    // Init GLAD
     if (!gladLoadGL(glfwGetProcAddress)) {
         std::cerr << "Failed to initialize GLAD\n";
         return -1;
@@ -138,63 +130,114 @@ int main() {
     std::cout << "OpenGL " << glGetString(GL_VERSION) << "  |  "
               << glGetString(GL_RENDERER) << "\n";
     std::cout << "Controls: left-drag to orbit, scroll to zoom, ESC to quit\n";
+    std::cout << "Debug   : V → cycle Solid / Wireframe / Vertices\n";
 
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_MULTISAMPLE);
+    glEnable(GL_CULL_FACE);   // skip back faces — MeshBuilder emits CCW quads
 
-    // ── GPU resources ────────────────────────────────────────────────────────
-    unsigned int VAO, VBO;
-    glGenVertexArrays(1, &VAO);
-    glGenBuffers(1, &VBO);
+    // ── World setup ───────────────────────────────────────────────────────────
+    World world;
+    // Seed the initial chunk at origin
+    world.update(glm::vec3(0.0f));
 
-    glBindVertexArray(VAO);
-    glBindBuffer(GL_ARRAY_BUFFER, VBO);
-    glBufferData(GL_ARRAY_BUFFER, sizeof(CUBE_VERTS), CUBE_VERTS, GL_STATIC_DRAW);
+    // Build meshes for all freshly generated chunks
+    rebuildDirtyMeshes(world);
 
-    // position  (location = 0)
-    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE,
-                          6 * sizeof(float), reinterpret_cast<void*>(0));
-    glEnableVertexAttribArray(0);
-    // normal    (location = 1)
-    glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE,
-                          6 * sizeof(float), reinterpret_cast<void*>(3 * sizeof(float)));
-    glEnableVertexAttribArray(1);
+    // ── Camera — frame the chunk ──────────────────────────────────────────────
+    camera.target   = glm::vec3(CHUNK_W * 0.5f, 6.0f, CHUNK_D * 0.5f);
+    camera.distance = 30.0f;
+    camera.pitch    = 25.0f;
+    camera.yaw      = 45.0f;
 
-    glBindVertexArray(0);
-
+    // ── Shaders ───────────────────────────────────────────────────────────────
     Shader shader("shaders/basic.vert", "shaders/basic.frag");
+    Shader debugShader("shaders/debug.vert", "shaders/debug.frag");
 
-    const glm::vec3 lightPos(3.0f, 5.0f, 3.0f);
-    const glm::vec3 cubeColor(0.40f, 0.72f, 1.0f); // light blue voxel
+    const glm::vec3 lightPos(20.0f, 40.0f, 20.0f);
+    // Per-block-type colors used until TextureAtlas is ready
+    const glm::vec3 grassColor(0.27f, 0.54f, 0.18f);
+    const glm::vec3 dirtColor (0.44f, 0.28f, 0.14f);
+    const glm::vec3 stoneColor(0.50f, 0.50f, 0.50f);
 
-    // ── Render loop ──────────────────────────────────────────────────────────
+    // Debug overlay colors
+    const glm::vec3 wireColor (1.0f, 1.0f, 0.0f);
+    const glm::vec3 pointColor(1.0f, 0.3f, 0.3f);
+
+    // ── Render loop ───────────────────────────────────────────────────────────
     while (!glfwWindowShouldClose(window)) {
-        glClearColor(0.10f, 0.10f, 0.15f, 1.0f);
+        glClearColor(0.45f, 0.70f, 0.95f, 1.0f); // sky blue
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        const float aspect = static_cast<float>(winW) / static_cast<float>(winH);
-        const glm::mat4 model = glm::mat4(1.0f);
-        const glm::mat4 view  = camera.getViewMatrix();
-        const glm::mat4 proj  = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 100.0f);
+        const float     aspect = static_cast<float>(winW) / static_cast<float>(winH);
+        const glm::mat4 model  = glm::mat4(1.0f);
+        const glm::mat4 view   = camera.getViewMatrix();
+        const glm::mat4 proj   = glm::perspective(glm::radians(45.0f), aspect, 0.1f, 500.0f);
 
-        shader.use();
-        shader.setMat4("model",       model);
-        shader.setMat4("view",        view);
-        shader.setMat4("projection",  proj);
-        shader.setVec3("lightPos",    lightPos);
-        shader.setVec3("viewPos",     camera.getPosition());
-        shader.setVec3("objectColor", cubeColor);
+        auto drawChunks = [&](Shader& sh, bool debugOverlay) {
+            sh.use();
+            sh.setMat4("model",      model);
+            sh.setMat4("view",       view);
+            sh.setMat4("projection", proj);
 
-        glBindVertexArray(VAO);
-        glDrawArrays(GL_TRIANGLES, 0, 36);
+            if (!debugOverlay) {
+                sh.setVec3("lightPos", lightPos);
+                sh.setVec3("viewPos",  camera.getPosition());
+                // Grass color as default — per-block coloring comes with TextureAtlas
+                sh.setVec3("objectColor", grassColor);
+            }
+
+            for (auto& [pos, mesh] : g_meshes) {
+                if (!debugOverlay)
+                    sh.setVec3("objectColor", grassColor); // placeholder
+                else
+                    sh.setVec3("debugColor",
+                               debugMode == DebugMode::Wireframe ? wireColor : pointColor);
+
+                mesh.draw();
+            }
+        };
+
+        if (debugMode == DebugMode::Solid) {
+            drawChunks(shader, false);
+        } else {
+            // Dim solid base
+            shader.use();
+            shader.setMat4("model",       model);
+            shader.setMat4("view",        view);
+            shader.setMat4("projection",  proj);
+            shader.setVec3("lightPos",    lightPos);
+            shader.setVec3("viewPos",     camera.getPosition());
+            shader.setVec3("objectColor", grassColor * 0.3f);
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            for (auto& [pos, mesh] : g_meshes) mesh.draw();
+
+            // Debug overlay
+            debugShader.use();
+            debugShader.setMat4("model",      model);
+            debugShader.setMat4("view",       view);
+            debugShader.setMat4("projection", proj);
+
+            if (debugMode == DebugMode::Wireframe) {
+                debugShader.setVec3("debugColor", wireColor);
+                glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
+                glLineWidth(1.5f);
+            } else {
+                debugShader.setVec3("debugColor", pointColor);
+                glPolygonMode(GL_FRONT_AND_BACK, GL_POINT);
+                glPointSize(5.0f);
+            }
+            for (auto& [pos, mesh] : g_meshes) mesh.draw();
+
+            glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+            glLineWidth(1.0f);
+            glPointSize(1.0f);
+        }
 
         glfwSwapBuffers(window);
         glfwPollEvents();
     }
 
-    // ── Cleanup ──────────────────────────────────────────────────────────────
-    glDeleteVertexArrays(1, &VAO);
-    glDeleteBuffers(1, &VBO);
     glfwTerminate();
     return 0;
 }
