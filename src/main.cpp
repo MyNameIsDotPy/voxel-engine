@@ -5,6 +5,7 @@
 
 #include <iostream>
 #include <unordered_map>
+#include <cmath>
 
 #include "Shader.h"
 #include "Types.h"
@@ -136,6 +137,64 @@ static void rebuildDirtyMeshes(World& world) {
         it = world.getChunk(it->first) ? ++it : g_meshes.erase(it);
 }
 
+// ── Time-of-day sky parameters ────────────────────────────────────────────────
+struct SkyParams {
+    glm::vec3 sunDir;
+    glm::vec3 sunColor;
+    glm::vec3 ambientColor;
+    glm::vec3 zenithColor;
+    glm::vec3 horizonColor;
+    float     fogDensity;
+};
+
+static SkyParams computeSky(double time) {
+    // Full day cycle every 20 real-time minutes
+    const float angle = static_cast<float>(time) * (2.0f * 3.14159265f / 1200.0f);
+    const glm::vec3 sunDir = glm::normalize(glm::vec3(std::cos(angle), std::sin(angle), 0.35f));
+    const float h = sunDir.y; // -1..1
+
+    SkyParams p;
+    p.sunDir     = sunDir;
+    p.fogDensity = 0.006f;
+
+    const auto lerp3 = [](glm::vec3 a, glm::vec3 b, float t) {
+        return glm::mix(a, b, glm::clamp(t, 0.0f, 1.0f));
+    };
+
+    if (h > 0.25f) {
+        // Midday
+        p.sunColor    = { 1.00f, 0.97f, 0.82f };
+        p.ambientColor = { 0.18f, 0.22f, 0.30f };
+        p.zenithColor  = { 0.08f, 0.30f, 0.78f };
+        p.horizonColor = { 0.56f, 0.78f, 1.00f };
+    } else if (h > 0.0f) {
+        // Sunrise / sunset
+        float t = h / 0.25f;
+        p.sunColor     = lerp3({1.0f,0.35f,0.05f}, {1.0f,0.97f,0.82f}, t);
+        p.ambientColor = lerp3({0.08f,0.05f,0.04f}, {0.18f,0.22f,0.30f}, t);
+        p.zenithColor  = lerp3({0.06f,0.04f,0.28f}, {0.08f,0.30f,0.78f}, t);
+        p.horizonColor = lerp3({0.90f,0.38f,0.08f}, {0.56f,0.78f,1.00f}, t);
+        p.fogDensity   = 0.009f;
+    } else if (h > -0.12f) {
+        // Twilight
+        float t = (h + 0.12f) / 0.12f;
+        p.sunColor     = lerp3({0.04f,0.04f,0.16f}, {1.0f,0.35f,0.05f}, t);
+        p.ambientColor = lerp3({0.02f,0.02f,0.07f}, {0.08f,0.05f,0.04f}, t);
+        p.zenithColor  = lerp3({0.00f,0.00f,0.05f}, {0.06f,0.04f,0.28f}, t);
+        p.horizonColor = lerp3({0.02f,0.02f,0.10f}, {0.90f,0.38f,0.08f}, t);
+        p.fogDensity   = 0.007f;
+    } else {
+        // Night
+        p.sunColor     = { 0.04f, 0.06f, 0.22f };
+        p.ambientColor = { 0.02f, 0.02f, 0.07f };
+        p.zenithColor  = { 0.00f, 0.00f, 0.05f };
+        p.horizonColor = { 0.02f, 0.02f, 0.10f };
+        p.fogDensity   = 0.004f;
+    }
+
+    return p;
+}
+
 // ── main ─────────────────────────────────────────────────────────────────────
 int main() {
     if (!glfwInit()) { std::cerr << "Failed to init GLFW\n"; return -1; }
@@ -186,6 +245,7 @@ int main() {
     // ── Shaders ───────────────────────────────────────────────────────────────
     Shader shader("shaders/basic.vert", "shaders/basic.frag");
     Shader debugShader("shaders/debug.vert", "shaders/debug.frag");
+    Shader skyShader("shaders/sky.vert", "shaders/sky.frag");
     Shader overlayShader("shaders/overlay.vert", "shaders/overlay.frag");
 
     // ── Full-screen overlay quad (NDC) ────────────────────────────────────────
@@ -208,10 +268,10 @@ int main() {
         glEnableVertexAttribArray(0);
         glBindVertexArray(0);
     }
+    const unsigned int skyVAO = overlayVAO; // reuse fullscreen quad
 
-    const glm::vec3 lightPos  ( 64.0f, 80.0f,  64.0f);
-    const glm::vec3 wireColor ( 1.0f,  1.0f,   0.0f);
-    const glm::vec3 pointColor( 1.0f,  0.3f,   0.3f);
+    const glm::vec3 wireColor ( 1.0f, 1.0f, 0.0f);
+    const glm::vec3 pointColor( 1.0f, 0.3f, 0.3f);
 
     double lastTime = glfwGetTime();
 
@@ -221,6 +281,9 @@ int main() {
         const float  dt  = static_cast<float>(now - lastTime);
         lastTime = now;
 
+        // ── Time of day ───────────────────────────────────────────────────────
+        const SkyParams sky = computeSky(now);
+
         // ── Update ───────────────────────────────────────────────────────────
         player.noclip = g_noclip;
         player.handleInput(g_input, lookForward(), lookRight(), world);
@@ -228,36 +291,51 @@ int main() {
         world.update(player.position);
         rebuildDirtyMeshes(world);
 
-        // ── View / projection ─────────────────────────────────────────────────
+        // ── Matrices ─────────────────────────────────────────────────────────
         const glm::vec3 eye    = player.eyePos();
         const glm::mat4 view   = glm::lookAt(eye, eye + lookForward(), glm::vec3(0,1,0));
         const float     aspect = static_cast<float>(winW) / static_cast<float>(winH);
         const glm::mat4 proj   = glm::perspective(glm::radians(90.0f), aspect, 0.05f, 500.0f);
         const glm::mat4 model  = glm::mat4(1.0f);
+        const glm::mat4 invP   = glm::inverse(proj);
+        const glm::mat4 invV   = glm::inverse(view);
+        const bool underwater  = player.isInWater(world);
 
-        // ── Draw ──────────────────────────────────────────────────────────────
-        const bool underwater = player.isInWater(world);
-
-        if (underwater)
-            glClearColor(0.04f, 0.18f, 0.35f, 1.0f); // deep murky blue
-        else
-            glClearColor(0.45f, 0.70f, 0.95f, 1.0f); // sky blue
+        glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
         glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-        shader.use();
-        shader.setMat4("model",      model);
-        shader.setMat4("view",       view);
-        shader.setMat4("projection", proj);
-        shader.setVec3("lightPos",   lightPos);
-        shader.setVec3("viewPos",    eye);
+        // ── Pass 0: sky ───────────────────────────────────────────────────────
+        glDisable(GL_DEPTH_TEST);
+        skyShader.use();
+        skyShader.setMat4("invProj",      invP);
+        skyShader.setMat4("invView",      invV);
+        skyShader.setVec2("screenSize",   glm::vec2(winW, winH));
+        skyShader.setVec3("sunDir",       sky.sunDir);
+        skyShader.setVec3("sunColor",     sky.sunColor);
+        skyShader.setVec3("zenithColor",  sky.zenithColor);
+        skyShader.setVec3("horizonColor", sky.horizonColor);
+        glBindVertexArray(skyVAO);
+        glDrawArrays(GL_TRIANGLES, 0, 6);
+        glEnable(GL_DEPTH_TEST);
 
         // ── Pass 1: opaque geometry ───────────────────────────────────────────
+        shader.use();
+        shader.setMat4("model",        model);
+        shader.setMat4("view",         view);
+        shader.setMat4("projection",   proj);
+        shader.setVec3("viewPos",      eye);
+        shader.setVec3("sunDir",       sky.sunDir);
+        shader.setVec3("sunColor",     sky.sunColor);
+        shader.setVec3("ambientColor", sky.ambientColor);
+        shader.setVec3("fogColor",     sky.horizonColor);
+        shader.setFloat("fogDensity",  sky.fogDensity);
+        shader.setFloat("time",        static_cast<float>(now));
+
         if (debugMode == DebugMode::Solid) {
             for (auto& [pos, rd] : g_meshes) rd.opaque.draw();
         } else {
             glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
             for (auto& [pos, rd] : g_meshes) rd.opaque.draw();
-
             debugShader.use();
             debugShader.setMat4("model",      model);
             debugShader.setMat4("view",       view);
@@ -280,25 +358,22 @@ int main() {
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
         glDepthMask(GL_FALSE);
-
         shader.use();
         for (auto& [pos, rd] : g_meshes) rd.transparent.draw();
-
         glDepthMask(GL_TRUE);
         glDisable(GL_BLEND);
 
-        // ── Pass 3: underwater screen tint ────────────────────────────────────
+        // ── Pass 3: underwater tint ───────────────────────────────────────────
         if (underwater) {
             glEnable(GL_BLEND);
             glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
             glDisable(GL_DEPTH_TEST);
-
             overlayShader.use();
-            glUniform4f(glGetUniformLocation(overlayShader.ID, "overlayColor"),
-                        0.04f, 0.22f, 0.55f, 0.45f);
+            overlayShader.setVec4("overlayColor", glm::vec4(0.04f, 0.20f, 0.52f, 0.42f));
+            overlayShader.setFloat("waterLineNDC", 2.0f);
+            overlayShader.setFloat("screenHeight", static_cast<float>(winH));
             glBindVertexArray(overlayVAO);
             glDrawArrays(GL_TRIANGLES, 0, 6);
-
             glEnable(GL_DEPTH_TEST);
             glDisable(GL_BLEND);
         }

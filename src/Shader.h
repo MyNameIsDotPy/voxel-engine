@@ -41,6 +41,12 @@ public:
     void setFloat(const char* name, float v) const {
         glUniform1f(loc(name), v);
     }
+    void setVec2(const char* name, const glm::vec2& v) const {
+        glUniform2fv(loc(name), 1, glm::value_ptr(v));
+    }
+    void setVec4(const char* name, const glm::vec4& v) const {
+        glUniform4fv(loc(name), 1, glm::value_ptr(v));
+    }
 
 private:
     GLint loc(const char* name) const {
